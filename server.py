@@ -1,250 +1,248 @@
-from fastapi import FastAPI, Request
-import httpx
-import asyncio
-from datetime import datetime
-import pytz
-import logging
+import requests
 import json
-
-app = FastAPI()
+import re
+import os
+from groq import Groq
 
 # ==============================
-# 🪵 LOGGING CONFIG
+# 🎨 COLORS
 # ==============================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
-
-logger = logging.getLogger("MCP_SERVER")
-
-# Shared async client (IMPORTANT for performance)
-client = httpx.AsyncClient(timeout=10)
+class Color:
+    CYAN = "\033[96m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    BOLD = "\033[1m"
+    END = "\033[0m"
 
 
 # ==============================
-# 🔧 SAFE ASYNC REQUEST HELPERS
+# 🔗 CONFIG
 # ==============================
+MCP_URL = "https://mcp-weather-s1s0.onrender.com/tool"
 
-async def safe_get_json(url):
-    logger.info(f"➡️ GET JSON: {url}")
+# ✅ USE ENV VARIABLE (IMPORTANT)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 
-    try:
-        res = await client.get(url)
+if not GROQ_API_KEY:
+    print("❌ Set GROQ_API_KEY environment variable first")
+    raise SystemExit(1)
 
-        logger.info(f"⬅️ Status: {res.status_code}")
-
-        if res.status_code != 200:
-            logger.error(f"❌ Bad status: {res.status_code}")
-            return None
-
-        if not res.text.strip():
-            logger.error("❌ Empty response")
-            return None
-
-        return res.json()
-
-    except httpx.ReadTimeout:
-        logger.error("⏳ Timeout")
-        return None
-
-    except Exception as e:
-        logger.exception(f"❌ JSON Error: {e}")
-        return None
+client = Groq(api_key=GROQ_API_KEY)
 
 
-async def safe_get_text(url):
-    logger.info(f"➡️ GET TEXT: {url}")
-
-    try:
-        res = await client.get(url)
-
-        logger.info(f"⬅️ Status: {res.status_code}")
-
-        if res.status_code != 200:
-            logger.error(f"❌ Text status: {res.status_code}")
-            return None
-
-        return res.text
-
-    except httpx.ReadTimeout:
-        logger.error("⏳ Text timeout")
-        return None
-
-    except Exception as e:
-        logger.exception(f"❌ TEXT Error: {e}")
-        return None
+MODEL = "llama-3.1-8b-instant"
 
 
 # ==============================
-# 🌍 COORDINATES
+# 🧠 TOOL SELECTION
 # ==============================
+def choose_tool(user_input):
+    text = user_input.lower()
 
-async def get_coordinates(city):
-    logger.info(f"🌍 Fetching coordinates: {city}")
+    if "aqi" in text or "air" in text:
+        return "getAQI"
+    elif "time" in text:
+        return "getTimeOnly"
+    elif "coordinate" in text:
+        return "getCoordinatesOnly"
+    elif "weather" in text:
+        return "getWeatherOnly"
+    elif "today" in text or "holiday" in text:
+        return "getTodaySpecial"
+    else:
+        return "getFullInsights"
 
-    url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}"
-    res = await safe_get_json(url)
 
-    if not res or "results" not in res or not res["results"]:
-        logger.error("❌ City not found")
-        return None
+# ==============================
+# 🌍 CITY EXTRACTION (FIXED)
+# ==============================
+def extract_cities(user_input):
+    words = re.findall(r"[A-Za-z]+", user_input)
 
-    data = res["results"][0]
-
-    return {
-        "city": data.get("name"),
-        "country": data.get("country"),
-        "latitude": data.get("latitude"),
-        "longitude": data.get("longitude"),
-        "timezone": data.get("timezone")
+    ignore = {
+        "weather", "today", "tell", "me", "what", "is",
+        "the", "in", "show", "give", "details"
     }
 
+    cities = [w.capitalize() for w in words if w.lower() not in ignore]
 
-# ==============================
-# 🌡 WEATHER
-# ==============================
-
-async def get_weather(lat, lon):
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
-    res = await safe_get_json(url)
-    return res.get("current_weather") if res else None
+    print(f"{Color.YELLOW}🔍 Detected cities: {cities}{Color.END}")
+    return cities
 
 
 # ==============================
-# 🌫 AQI
+# 🔧 MCP CALL (FIXED)
 # ==============================
-
-async def get_aqi(lat, lon):
-    url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=pm10,pm2_5,us_aqi"
-    res = await safe_get_json(url)
-    return res.get("current") if res else None
-
-
-# ==============================
-# 🕒 TIME (sync is fine)
-# ==============================
-
-def get_time(timezone):
+def call_mcp(tool, city):
     try:
-        tz = pytz.timezone(timezone)
-        return datetime.now(tz).strftime("%d %B %Y, %I:%M %p")
-    except Exception as e:
-        logger.exception(f"❌ Time error: {e}")
-        return None
+        print(f"{Color.CYAN}📡 Calling MCP: {tool} → {city}{Color.END}")
 
-
-# ==============================
-# 🎉 HOLIDAY
-# ==============================
-
-async def get_today_holiday(country_code="IN"):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    year = today[:4]
-
-    url = f"https://date.nager.at/api/v3/PublicHolidays/{year}/{country_code}"
-    res = await safe_get_json(url)
-
-    if not res:
-        return None
-
-    for holiday in res:
-        if holiday.get("date") == today:
-            return holiday.get("localName")
-
-    return None
-
-
-# ==============================
-# 📚 FACT
-# ==============================
-
-async def get_today_fact():
-    today = datetime.utcnow()
-    url = f"http://numbersapi.com/{today.month}/{today.day}/date"
-    return await safe_get_text(url)
-
-
-# ==============================
-# 🧠 TOOL HANDLER
-# ==============================
-
-@app.post("/tool")
-async def tool_handler(request: Request):
-    try:
-        payload = await request.json()
-
-        logger.info("🔥 MCP SERVER HIT")
-        logger.info(json.dumps(payload, indent=2))
-
-        tool = payload.get("tool")
-        city = payload.get("input")
-
-        # ❤️ HEALTH CHECK
-        if tool == "healthCheck":
-            return {
-                "status": "ok",
-                "server": "MCP ASYNC RUNNING",
-                "version": "V7-ASYNC"
-            }
-
-        if not city:
-            return {"error": "No city provided"}
-
-        coord = await get_coordinates(city)
-
-        if not coord:
-            return {"error": "City not found"}
-
-        lat = coord["latitude"]
-        lon = coord["longitude"]
-
-        # 🚀 PARALLEL EXECUTION (KEY BOOST)
-        weather_task = get_weather(lat, lon)
-        aqi_task = get_aqi(lat, lon)
-        holiday_task = get_today_holiday("IN")
-        fact_task = get_today_fact()
-
-        weather, aqi, holiday, fact = await asyncio.gather(
-            weather_task,
-            aqi_task,
-            holiday_task,
-            fact_task
+        res = requests.post(
+            MCP_URL,
+            json={"tool": tool, "input": city},
+            timeout=15
         )
 
-        result = {
-            "source": "MCP_SERVER_V7_ASYNC",
-            "city": coord["city"],
-            "country": coord["country"],
-            "latitude": lat,
-            "longitude": lon
-        }
+        if res.status_code != 200:
+            return {"error": f"HTTP {res.status_code}"}
 
-        if weather:
-            result["weather"] = weather
+        data = res.json()
 
-        if aqi:
-            result["aqi"] = aqi
+        if not data:
+            return {"error": "Empty MCP response"}
 
-        current_time = get_time(coord["timezone"])
-        if current_time:
-            result["current_time"] = current_time
-
-        special = {}
-        if holiday:
-            special["holiday"] = holiday
-        if fact:
-            special["fact"] = fact
-
-        if special:
-            result["today_special"] = special
-
-        logger.info("✅ Final Response:")
-        logger.info(json.dumps(result, indent=2))
-
-        return result
+        return data
 
     except Exception as e:
-        logger.exception(f"💥 CRITICAL ERROR: {e}")
-        return {"error": "Internal server error"}
+        return {"error": str(e)}
+
+
+# ==============================
+# 🧹 CLEAN DATA
+# ==============================
+def clean_data(data):
+    if not isinstance(data, dict):
+        return {"error": "Invalid MCP format"}
+
+    cleaned = {}
+
+    for k, v in data.items():
+        if v is None:
+            continue
+        cleaned[k] = v
+
+    cleaned.setdefault("country", "India")
+
+    return cleaned
+
+
+# ==============================
+# 🧠 PROMPT
+# ==============================
+def build_prompt(user_query, mcp_data):
+    return f"""
+FORMAT STRICT:
+
+📍 Location: City, Country
+🌡 Weather:
+🌫 Air Quality:
+🕒 Time:
+🎉 Highlights:
+
+DATA:
+{json.dumps(mcp_data, indent=2)}
+
+USER:
+{user_query}
+"""
+
+
+# ==============================
+# 🤖 GROQ RESPONSE (FIXED)
+# ==============================
+def generate_llm_response(prompt):
+    try:
+        print(f"{Color.GREEN}⚡ Generating response...{Color.END}")
+
+        completion = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "Format data cleanly."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+            stream=True
+        )
+
+        full = ""
+
+        for chunk in completion:
+            if not chunk.choices:
+                continue
+
+            delta = chunk.choices[0].delta
+
+            if not delta:
+                continue
+
+            token = delta.content
+
+            if token:
+                print(token, end="", flush=True)
+                full += token
+
+        if not full:
+            print("❌ Empty LLM response")
+
+        print("\n")
+        return full
+
+    except Exception as e:
+        print(f"{Color.RED}❌ Groq Error: {e}{Color.END}")
+        return ""
+
+
+# ==============================
+# 🚀 CLI
+# ==============================
+def start_cli():
+    print(f"{Color.GREEN}{Color.BOLD}🚀 MCP + Groq Agent Ready{Color.END}\n")
+
+    while True:
+        user_input = input(f"{Color.CYAN}{Color.BOLD}You:{Color.END} ")
+
+        if user_input.lower() == "exit":
+            print("👋 Bye!")
+            break
+
+        cities = extract_cities(user_input)
+
+        if not cities:
+            print(f"{Color.RED}❌ No city found{Color.END}")
+            continue
+
+        if len(cities) > 1:
+            print(f"{Color.YELLOW}🔍 Multi-city mode{Color.END}")
+
+            results = []
+            for city in cities:
+                data = call_mcp("getFullInsights", city)
+
+                if "error" in data:
+                    print(f"{Color.RED}{city}: {data['error']}{Color.END}")
+                    continue
+
+                results.append({city: clean_data(data)})
+
+            if not results:
+                print("❌ No valid data")
+                continue
+
+            prompt = build_prompt(user_input, results)
+
+        else:
+            city = cities[0]
+            tool = choose_tool(user_input)
+
+            data = call_mcp(tool, city)
+
+            if "error" in data:
+                print(f"{Color.RED}{data['error']}{Color.END}")
+                continue
+
+            prompt = build_prompt(user_input, clean_data(data))
+
+        print(f"\n{Color.GREEN}🤖 AI:{Color.END}\n")
+        generate_llm_response(prompt)
+
+
+# ==============================
+# ▶️ ENTRY
+# ==============================
+if __name__ == "__main__":
+    start_cli()
+
+# ==============================
+def run_agent():
+    start_cli()    
