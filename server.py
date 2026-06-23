@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware  # ← ADDED
 import httpx
 import asyncio
 from datetime import datetime
@@ -8,6 +9,17 @@ import json
 import os
 
 app = FastAPI()
+
+# ==============================
+# ✅ CORS (allow frontend calls)  ← ADDED
+# ==============================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ==============================
 # 🪵 LOGGING CONFIG
@@ -130,20 +142,8 @@ async def get_coordinates_nominatim(city):
         return None
 
 
-async def get_coordinates_bigdatacloud(city):
-    """Fallback 2: BigDataCloud Free Geocoding"""
-    url = f"https://api.bigdatacloud.net/data/reverse-geocode-client?localityLanguage=en"
-    
-    try:
-        # BigDataCloud works better with lat/lon, so we try a search approach
-        # Actually let's use a different approach - direct search via geocode.xyz
-        return None
-    except:
-        return None
-
-
 async def get_coordinates_geocode_xyz(city):
-    """Fallback 3: Geocode.xyz"""
+    """Fallback 2: Geocode.xyz"""
     url = f"https://geocode.xyz/{city}?json=1"
     
     try:
@@ -226,31 +226,8 @@ async def get_weather_openmeteo_archive(lat, lon):
         return None
 
 
-async def get_weather_meteoblue(lat, lon):
-    """Fallback 2: Meteoblue (limited free tier)"""
-    url = f"https://my.meteoblue.com/packages/basic-1h_basic-day?lat={lat}&lon={lon}&apikey=anonymous"
-    
-    try:
-        res = await safe_get_json(url, timeout=8)
-        if not res or "data_1h" not in res:
-            return None
-        
-        current = res["data_1h"]
-        return {
-            "temperature": current.get("temperature", [None])[0],
-            "windspeed": current.get("windspeed", [None])[0],
-            "winddirection": current.get("winddirection", [None])[0],
-            "weathercode": None,
-            "time": datetime.utcnow().isoformat(),
-            "source": "meteoblue"
-        }
-    except Exception as e:
-        logger.warning(f"Meteoblue failed: {e}")
-        return None
-
-
 async def get_weather_7timer(lat, lon):
-    """Fallback 3: 7Timer (simple, reliable)"""
+    """Fallback 2: 7Timer (simple, reliable)"""
     url = f"https://www.7timer.info/bin/api.pl?lon={lon}&lat={lat}&product=civil&output=json"
     
     try:
@@ -261,7 +238,6 @@ async def get_weather_7timer(lat, lon):
         current = res["dataseries"][0]
         temp = current.get("temp2m", 0)
         
-        # Convert weather code to description
         weather_codes = {
             "clear": 0, "cloudy": 1, "rain": 51, "snow": 71, "storm": 95
         }
@@ -287,8 +263,7 @@ async def get_weather(lat, lon):
     sources = [
         ("Open-Meteo", get_weather_openmeteo),
         ("Open-Meteo Archive", get_weather_openmeteo_archive),
-        ("7Timer", get_weather_7timer),
-        ("Meteoblue", get_weather_meteoblue)
+        ("7Timer", get_weather_7timer)
     ]
     
     for name, fn in sources:
@@ -397,31 +372,10 @@ async def get_today_holiday_nager(country_code="IN"):
     return None
 
 
-async def get_today_holiday_calendario(country_code="IN"):
-    """Fallback: Calendario API (Brazil-based but global)"""
-    today = datetime.utcnow()
-    url = f"https://calendario.com.br/api/holidays?ano={today.year}&estado=SP&cidade=SAO_PAULO"
-    
-    try:
-        res = await safe_get_json(url, timeout=8)
-        if not res:
-            return None
-        
-        for holiday in res:
-            holiday_date = holiday.get("date", "")
-            if today.strftime("%Y-%m-%d") in holiday_date:
-                return holiday.get("name")
-    except Exception as e:
-        logger.warning(f"Calendario failed: {e}")
-    
-    return None
-
-
 async def get_today_holiday(country_code="IN"):
     """Try multiple holiday sources"""
     sources = [
-        ("Nager.Date", get_today_holiday_nager),
-        ("Calendario", get_today_holiday_calendario)
+        ("Nager.Date", get_today_holiday_nager)
     ]
     
     for name, fn in sources:
@@ -561,9 +515,9 @@ async def tool_handler(request: Request):
                 "version": "V8-FALLBACK",
                 "features": {
                     "coordinates": ["openmeteo", "nominatim", "geocode_xyz"],
-                    "weather": ["openmeteo", "openmeteo_archive", "7timer", "meteoblue"],
+                    "weather": ["openmeteo", "openmeteo_archive", "7timer"],
                     "aqi": ["openmeteo_aqi", "waqi"],
-                    "holiday": ["nager", "calendario"],
+                    "holiday": ["nager"],
                     "facts": ["numbersapi", "wikipedia"]
                 }
             }
