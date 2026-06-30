@@ -1,5 +1,7 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware  # ← ADDED
+import jwt
+from jwt import PyJWKClient
 import httpx
 import asyncio
 from datetime import datetime
@@ -31,6 +33,10 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("MCP_SERVER")
+
+CLERK_JWKS_URL = "https://excited-ibex-65.clerk.accounts.dev/.well-known/jwks.json"
+CLERK_ISSUER = "https://excited-ibex-65.clerk.accounts.dev"
+jwks_client = PyJWKClient(CLERK_JWKS_URL)
 
 # Shared async client (IMPORTANT for performance)
 client = httpx.AsyncClient(timeout=10)
@@ -164,6 +170,37 @@ async def get_coordinates_geocode_xyz(city):
         }
     except Exception as e:
         logger.warning(f"Geocode.xyz failed: {e}")
+        return None
+
+
+def _mask_token(token: str) -> str:
+    if not token:
+        return "[none]"
+    if len(token) <= 12:
+        return "***"
+    return token[:8] + "..."
+
+def verify_clerk_token(request: Request):
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        logger.info("🔐 [AUTH] No Bearer token in request")
+        return None
+    token = auth.split(" ", 1)[1]
+    masked = _mask_token(token)
+    logger.info(f"🔐 [AUTH] Verifying token: {masked}")
+    try:
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+        payload = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            issuer=CLERK_ISSUER,
+            options={"verify_aud": False, "verify_exp": True}
+        )
+        logger.info(f"🔐 [AUTH] Token valid for user: {payload.get('email', payload.get('sub', 'unknown'))}")
+        return payload
+    except Exception as e:
+        logger.warning(f"🔐 [AUTH] Token verification failed: {masked} | error: {e}")
         return None
 
 
@@ -466,14 +503,12 @@ async def keep_alive_loop():
     while True:
         try:
             async with httpx.AsyncClient(timeout=15) as ping_client:
-                response = await ping_client.post(
-                    SELF_URL,
-                    json={"tool": "healthCheck"},
-                    headers={"Content-Type": "application/json"}
-                )
+                # Ping /health so we don't need a Bearer token
+                health_url = SELF_URL.replace("/tool", "/health")
+                response = await ping_client.get(health_url, timeout=15)
                 
                 if response.status_code == 200:
-                    logger.info("♻️ Keep-alive ping successful — server is awake")
+                    logger.info("♻️ Keep-alive ping successful — /health is awake")
                 else:
                     logger.warning(f"♻️ Keep-alive ping returned status {response.status_code}")
                     
@@ -493,11 +528,31 @@ async def startup_event():
 
 
 # ==============================
-# 🧠 TOOL HANDLER
+# ❤️ PUBLIC HEALTH (no auth)
+# ==============================
+
+@app.get("/health")
+@app.head("/health")
+def health():
+    return {"status": "ok"}
+
+
+# ==============================
+# 🧠 TOOL HANDLER (protected)
 # ==============================
 
 @app.post("/tool")
 async def tool_handler(request: Request):
+    # Verify Bearer token from backend
+    user = verify_clerk_token(request)
+    if not user:
+        logger.warning("🔐 [AUTH] /tool rejected — no valid token")
+        return JSONResponse(
+            {"error": "Unauthorized — valid Bearer token required"},
+            status_code=401
+        )
+    logger.info(f"🔐 [AUTH] /tool accessed by: {user.get('email', user.get('sub', 'unknown'))}")
+
     try:
         payload = await request.json()
 

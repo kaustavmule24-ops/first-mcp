@@ -4,3 +4,5 @@ requests
 pytz
 httpx
 python-multipart
+pyjwt>=2.6.0
+cryptography
