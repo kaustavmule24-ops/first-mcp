@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Request, JSONResponse
+from fastapi import FastAPI, Request
+from starlette.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware  # ← ADDED
 import jwt
 from jwt import PyJWKClient
