@@ -504,12 +504,12 @@ async def keep_alive_loop():
     while True:
         try:
             async with httpx.AsyncClient(timeout=15) as ping_client:
-                # Ping /health so we don't need a Bearer token
-                health_url = SELF_URL.replace("/tool", "/health")
-                response = await ping_client.get(health_url, timeout=15)
+                # Ping /ping (public, no auth) instead of /health (protected)
+                ping_url = SELF_URL.replace("/tool", "/ping")
+                response = await ping_client.get(ping_url, timeout=15)
                 
                 if response.status_code == 200:
-                    logger.info("♻️ Keep-alive ping successful — /health is awake")
+                    logger.info("♻️ Keep-alive ping successful — /ping is awake")
                 else:
                     logger.warning(f"♻️ Keep-alive ping returned status {response.status_code}")
                     
@@ -532,9 +532,21 @@ async def startup_event():
 # ❤️ PUBLIC HEALTH (no auth)
 # ==============================
 
-@app.get("/health")
-@app.head("/health")
-def health():
+# ==============================
+# 🏓 PUBLIC PING (for keep-alive, no auth)
+# ==============================
+
+@app.get("/ping")
+@app.head("/ping")
+def ping():
+    return {"status": "ok"}
+    user = verify_clerk_token(request)
+    if not user:
+        return JSONResponse(
+            {"error": "Unauthorized — valid Bearer token required"},
+            status_code=401
+        )
+    logger.info(f"🔐 [AUTH] /health accessed by: {user.get('email', user.get('sub', 'unknown'))}")
     return {"status": "ok"}
 
 
