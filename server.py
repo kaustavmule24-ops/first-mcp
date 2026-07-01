@@ -35,6 +35,11 @@ logging.basicConfig(
 
 logger = logging.getLogger("MCP_SERVER")
 
+# ==============================
+# 🔒 GATEWAY SECRET
+# ==============================
+GATEWAY_SECRET = os.environ.get("GATEWAY_SECRET", "")
+
 CLERK_JWKS_URL = "https://excited-ibex-65.clerk.accounts.dev/.well-known/jwks.json"
 CLERK_ISSUER = "https://excited-ibex-65.clerk.accounts.dev"
 jwks_client = PyJWKClient(CLERK_JWKS_URL)
@@ -204,6 +209,16 @@ def verify_clerk_token(request: Request):
         logger.warning(f"🔐 [AUTH] Token verification failed: {masked} | error: {e}")
         return None
 
+def verify_gateway_secret(request: Request):
+    secret = request.headers.get("X-Gateway-Secret", "")
+    if not GATEWAY_SECRET:
+        logger.warning("⚠️ GATEWAY_SECRET not set — allowing all requests (dev mode)")
+        return True
+    if secret != GATEWAY_SECRET:
+        logger.warning(f"❌ Invalid X-Gateway-Secret: {secret[:8]}...")
+        return False
+    logger.info("✅ X-Gateway-Secret verified")
+    return True
 
 async def get_coordinates(city):
     """Try multiple coordinate sources with fallback"""
@@ -556,7 +571,15 @@ def ping():
 
 @app.post("/tool")
 async def tool_handler(request: Request):
-    # Verify Bearer token from backend
+    # 1. Verify Gateway Secret FIRST
+    if not verify_gateway_secret(request):
+        logger.warning("❌ [GATEWAY] /tool rejected — invalid gateway secret")
+        return JSONResponse(
+            {"error": "Unauthorized — Invalid gateway secret"},
+            status_code=401
+        )
+    
+    # 2. Verify Bearer token from backend
     user = verify_clerk_token(request)
     if not user:
         logger.warning("🔐 [AUTH] /tool rejected — no valid token")
