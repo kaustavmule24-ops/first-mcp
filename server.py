@@ -40,8 +40,8 @@ logger = logging.getLogger("MCP_SERVER")
 # ==============================
 GATEWAY_SECRET = os.environ.get("GATEWAY_SECRET", "")
 
-CLERK_JWKS_URL = "https://excited-ibex-65.clerk.accounts.dev/.well-known/jwks.json"
-CLERK_ISSUER = "https://excited-ibex-65.clerk.accounts.dev"
+CLERK_JWKS_URL = os.environ.get("CLERK_JWKS_URL", "...")
+CLERK_ISSUER = os.environ.get("CLERK_ISSUER", "...")
 jwks_client = PyJWKClient(CLERK_JWKS_URL)
 
 # Shared async client (IMPORTANT for performance)
@@ -503,7 +503,7 @@ async def get_today_fact():
 # ♻️ KEEP-ALIVE (Self-ping to prevent Render sleep)
 # ==============================
 
-SELF_URL = os.environ.get("SELF_URL", "https://mcp-weather-s1s0.onrender.com/tool")
+SELF_URL =  os.environ.get("SELF_URL", "")
 KEEP_ALIVE_INTERVAL = 540  # 9 minutes (in seconds)
 
 async def keep_alive_loop():
@@ -543,11 +543,7 @@ async def startup_event():
     logger.info("🚀 MCP Server startup complete — keep-alive task registered")
 
 
-# ==============================
-# ❤️ PUBLIC HEALTH (no auth)
-# ==============================
-
-# ==============================
+## ==============================
 # 🏓 PUBLIC PING (for keep-alive, no auth)
 # ==============================
 
@@ -555,6 +551,15 @@ async def startup_event():
 @app.head("/ping")
 def ping():
     return {"status": "ok"}
+
+
+# ==============================
+# ❤️ HEALTH (protected — used by gateway/agent)
+# ==============================
+
+@app.get("/health")
+@app.head("/health")
+def health(request: Request):
     user = verify_clerk_token(request)
     if not user:
         return JSONResponse(
