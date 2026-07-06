@@ -106,132 +106,17 @@ async def safe_get_text(url, timeout=10):
 
 
 # ==============================
-# WORLD COORDINATES - MULTIPLE SOURCES (WORLDWIDE)
+# 🌍 COORDINATES — MULTIPLE SOURCES
 # ==============================
 
-async def get_coordinates_photon(city):
-    """Primary: Photon (Komoot) - Elasticsearch-based, fast, worldwide OSM coverage.
-    Returns GeoJSON FeatureCollection. No API key needed."""
-    url = f"https://photon.komoot.io/api/?q={city}&limit=1"
-
-    try:
-        res = await client.get(url, timeout=10)
-        if res.status_code != 200:
-            return None
-
-        data = res.json()
-        features = data.get("features", [])
-        if not features or len(features) == 0:
-            return None
-
-        feature = features[0]
-        props = feature.get("properties", {})
-        coords = feature.get("geometry", {}).get("coordinates", [0, 0])
-
-        lon = coords[0] if len(coords) > 0 else 0
-        lat = coords[1] if len(coords) > 1 else 0
-
-        country = props.get("country", "") or props.get("countrycode", "Unknown")
-        city_name = props.get("name", "") or props.get("city", props.get("town", props.get("village", city)))
-
-        # Get timezone via BigDataCloud free API (no key needed)
-        timezone = "UTC"
-        try:
-            tz_url = f"https://api.bigdatacloud.net/data/reverse-geocode-client?latitude={lat}&longitude={lon}&localityLanguage=en"
-            tz_res = await client.get(tz_url, timeout=5)
-            if tz_res.status_code == 200:
-                tz_data = tz_res.json()
-                for info in tz_data.get("localityInfo", {}).get("informative", []):
-                    if info.get("description") == "time zone":
-                        timezone = info.get("name", "UTC")
-                        break
-                if timezone == "UTC":
-                    for info in tz_data.get("localityInfo", {}).get("informative", []):
-                        name = info.get("name", "")
-                        if "/" in name and len(name.split("/")) == 2:
-                            timezone = name
-                            break
-        except Exception:
-            pass
-
-        return {
-            "city": city_name or city,
-            "country": country,
-            "latitude": float(lat),
-            "longitude": float(lon),
-            "timezone": timezone
-        }
-    except Exception as e:
-        logger.warning(f"Photon failed: {e}")
-        return None
-
-
-async def get_coordinates_bigdatacloud_nominatim(city):
-    """Fallback 1: BigDataCloud + Nominatim hybrid. Free, global coverage."""
-    try:
-        search_url = f"https://nominatim.openstreetmap.org/search?q={city}&format=json&limit=1&addressdetails=1"
-        headers = {
-            "User-Agent": "GeoBot-MCP/1.0 (contact@geobot.app)",
-            "Accept-Language": "en"
-        }
-
-        res = await client.get(search_url, headers=headers, timeout=10)
-        if res.status_code != 200:
-            return None
-
-        data = res.json()
-        if not data or len(data) == 0:
-            return None
-
-        place = data[0]
-        lat = float(place.get("lat", 0))
-        lon = float(place.get("lon", 0))
-
-        bdc_url = f"https://api.bigdatacloud.net/data/reverse-geocode-client?latitude={lat}&longitude={lon}&localityLanguage=en"
-        bdc_res = await client.get(bdc_url, timeout=8)
-
-        if bdc_res.status_code == 200:
-            bdc_data = bdc_res.json()
-            country = bdc_data.get("countryName", "")
-            city_name = bdc_data.get("city", bdc_data.get("locality", bdc_data.get("principalSubdivision", city)))
-
-            timezone = "UTC"
-            for info in bdc_data.get("localityInfo", {}).get("informative", []):
-                if info.get("description") == "time zone":
-                    timezone = info.get("name", "UTC")
-                    break
-            if timezone == "UTC":
-                for info in bdc_data.get("localityInfo", {}).get("informative", []):
-                    name = info.get("name", "")
-                    if "/" in name and len(name.split("/")) == 2:
-                        timezone = name
-                        break
-        else:
-            address = place.get("address", {})
-            country = address.get("country", "Unknown")
-            city_name = address.get("city", address.get("town", address.get("village", city)))
-            timezone = "UTC"
-
-        return {
-            "city": city_name or city,
-            "country": country or "Unknown",
-            "latitude": lat,
-            "longitude": lon,
-            "timezone": timezone or "UTC"
-        }
-    except Exception as e:
-        logger.warning(f"BigDataCloud/Nominatim fallback failed: {e}")
-        return None
-
-
 async def get_coordinates_openmeteo(city):
-    """Fallback 2: Open-Meteo Geocoding - Europe-focused, limited worldwide."""
+    """Primary: Open-Meteo Geocoding"""
     url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1"
     res = await safe_get_json(url)
-
+    
     if not res or "results" not in res or not res["results"]:
         return None
-
+    
     data = res["results"][0]
     return {
         "city": data.get("name"),
@@ -242,27 +127,120 @@ async def get_coordinates_openmeteo(city):
     }
 
 
+async def get_coordinates_nominatim(city):
+    """Fallback 1: OpenStreetMap Nominatim"""
+    url = f"https://nominatim.openstreetmap.org/search?q={city}&format=json&limit=1"
+    headers = {"User-Agent": "GeoBot-MCP/1.0"}
+    
+    try:
+        res = await client.get(url, headers=headers, timeout=10)
+        if res.status_code != 200:
+            return None
+        
+        data = res.json()
+        if not data or len(data) == 0:
+            return None
+        
+        place = data[0]
+        return {
+            "city": place.get("display_name", "").split(",")[0],
+            "country": place.get("display_name", "").split(",")[-1].strip(),
+            "latitude": float(place.get("lat")),
+            "longitude": float(place.get("lon")),
+            "timezone": "UTC"
+        }
+    except Exception as e:
+        logger.warning(f"Nominatim failed: {e}")
+        return None
+
+
+async def get_coordinates_geocode_xyz(city):
+    """Fallback 2: Geocode.xyz"""
+    url = f"https://geocode.xyz/{city}?json=1"
+    
+    try:
+        res = await client.get(url, timeout=10)
+        if res.status_code != 200:
+            return None
+        
+        data = res.json()
+        if "error" in data:
+            return None
+        
+        return {
+            "city": data.get("standard", {}).get("city", city),
+            "country": data.get("standard", {}).get("countryname", "Unknown"),
+            "latitude": float(data.get("latt", 0)),
+            "longitude": float(data.get("longt", 0)),
+            "timezone": "UTC"
+        }
+    except Exception as e:
+        logger.warning(f"Geocode.xyz failed: {e}")
+        return None
+
+
+def _mask_token(token: str) -> str:
+    if not token:
+        return "[none]"
+    if len(token) <= 12:
+        return "***"
+    return token[:8] + "..."
+
+def verify_clerk_token(request: Request):
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        logger.info("🔐 [AUTH] No Bearer token in request")
+        return None
+    token = auth.split(" ", 1)[1]
+    masked = _mask_token(token)
+    logger.info(f"🔐 [AUTH] Verifying token: {masked}")
+    try:
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+        payload = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            issuer=CLERK_ISSUER,
+            options={"verify_aud": False, "verify_exp": True}
+        )
+        logger.info(f"🔐 [AUTH] Token valid for user: {payload.get('email', payload.get('sub', 'unknown'))}")
+        return payload
+    except Exception as e:
+        logger.warning(f"🔐 [AUTH] Token verification failed: {masked} | error: {e}")
+        return None
+
+def verify_gateway_secret(request: Request):
+    secret = request.headers.get("X-Gateway-Secret", "")
+    if not GATEWAY_SECRET:
+        logger.warning("⚠️ GATEWAY_SECRET not set — allowing all requests (dev mode)")
+        return True
+    if secret != GATEWAY_SECRET:
+        logger.warning(f"❌ Invalid X-Gateway-Secret: {secret[:8]}...")
+        return False
+    logger.info("✅ X-Gateway-Secret verified")
+    return True
+
 async def get_coordinates(city):
-    """Worldwide geocoding with fallback chain - no API keys needed."""
-    logger.info(f"Fetching coordinates for: {city}")
-
+    """Try multiple coordinate sources with fallback"""
+    logger.info(f"🌍 Fetching coordinates for: {city}")
+    
     sources = [
-        ("Photon (Komoot)", get_coordinates_photon),
-        ("BigDataCloud+Nominatim", get_coordinates_bigdatacloud_nominatim),
         ("Open-Meteo", get_coordinates_openmeteo),
+        ("Nominatim", get_coordinates_nominatim),
+        ("Geocode.xyz", get_coordinates_geocode_xyz)
     ]
-
+    
     for name, fn in sources:
         try:
-            logger.info(f"Trying {name}...")
+            logger.info(f"🌍 Trying {name}...")
             result = await fn(city)
             if result and result.get("latitude") and result.get("longitude"):
-                logger.info(f"{name} success: {result['city']}, {result['country']}")
+                logger.info(f"✅ {name} success: {result['city']}, {result['country']}")
                 return result
         except Exception as e:
-            logger.warning(f"{name} failed: {e}")
-
-    logger.error("All coordinate sources failed")
+            logger.warning(f"❌ {name} failed: {e}")
+    
+    logger.error("❌ All coordinate sources failed")
     return None
 
 
@@ -632,7 +610,7 @@ async def tool_handler(request: Request):
                 "server": "MCP ASYNC RUNNING",
                 "version": "V8-FALLBACK",
                 "features": {
-                    "coordinates": ["photon", "bigdatacloud_nominatim", "openmeteo"],
+                    "coordinates": ["openmeteo", "nominatim", "geocode_xyz"],
                     "weather": ["openmeteo", "openmeteo_archive", "7timer"],
                     "aqi": ["openmeteo_aqi", "waqi"],
                     "holiday": ["nager"],
@@ -646,7 +624,7 @@ async def tool_handler(request: Request):
         coord = await get_coordinates(city)
 
         if not coord:
-            return {"error": "City not found — tried Photon, BigDataCloud+Nominatim, and Open-Meteo"}
+            return {"error": "City not found — tried Open-Meteo, Nominatim, and Geocode.xyz"}
 
         lat = coord["latitude"]
         lon = coord["longitude"]
@@ -699,47 +677,3 @@ async def tool_handler(request: Request):
     except Exception as e:
         logger.exception(f"💥 CRITICAL ERROR: {e}")
         return {"error": "Internal server error"}
-
-
-def _mask_token(token: str) -> str:
-    if not token:
-        return "[none]"
-    if len(token) <= 12:
-        return "***"
-    return token[:8] + "..."
-
-
-def verify_clerk_token(request: Request):
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        logger.info("🔐 [AUTH] No Bearer token in request")
-        return None
-    token = auth.split(" ", 1)[1]
-    masked = _mask_token(token)
-    logger.info(f"🔐 [AUTH] Verifying token: {masked}")
-    try:
-        signing_key = jwks_client.get_signing_key_from_jwt(token)
-        payload = jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256"],
-            issuer=CLERK_ISSUER,
-            options={"verify_aud": False, "verify_exp": True}
-        )
-        logger.info(f"🔐 [AUTH] Token valid for user: {payload.get('email', payload.get('sub', 'unknown'))}")
-        return payload
-    except Exception as e:
-        logger.warning(f"🔐 [AUTH] Token verification failed: {masked} | error: {e}")
-        return None
-
-
-def verify_gateway_secret(request: Request):
-    secret = request.headers.get("X-Gateway-Secret", "")
-    if not GATEWAY_SECRET:
-        logger.warning("⚠️ GATEWAY_SECRET not set — allowing all requests (dev mode)")
-        return True
-    if secret != GATEWAY_SECRET:
-        logger.warning(f"❌ Invalid X-Gateway-Secret: {secret[:8]}...")
-        return False
-    logger.info("✅ X-Gateway-Secret verified")
-    return True
