@@ -249,10 +249,40 @@ async def get_coordinates(city):
 # ==============================
 
 async def get_weather_openmeteo(lat, lon):
-    """Primary: Open-Meteo Weather"""
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
+    """Primary: Open-Meteo Weather - Rich current data"""
+    url = (f"https://api.open-meteo.com/v1/forecast?"
+           f"latitude={lat}&longitude={lon}"
+           f"&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
+           f"precipitation,rain,showers,snowfall,weather_code,cloud_cover,"
+           f"pressure_msl,surface_pressure,wind_speed_10m,wind_direction_10m,"
+           f"wind_gusts_10m,visibility,is_day"
+           f"&timezone=auto")
+    
     res = await safe_get_json(url)
-    return res.get("current_weather") if res else None
+    if not res or "current" not in res:
+        return None
+    
+    current = res["current"]
+    return {
+        "temperature": current.get("temperature_2m"),
+        "relative_humidity": current.get("relative_humidity_2m"),
+        "apparent_temperature": current.get("apparent_temperature"),
+        "precipitation": current.get("precipitation"),
+        "rain": current.get("rain"),
+        "showers": current.get("showers"),
+        "snowfall": current.get("snowfall"),
+        "weathercode": current.get("weather_code"),
+        "cloudcover": current.get("cloud_cover"),
+        "pressure_msl": current.get("pressure_msl"),
+        "surface_pressure": current.get("surface_pressure"),
+        "windspeed": current.get("wind_speed_10m"),
+        "winddirection": current.get("wind_direction_10m"),
+        "windgusts": current.get("wind_gusts_10m"),
+        "visibility": current.get("visibility"),
+        "is_day": current.get("is_day", 1),
+        "time": current.get("time"),
+        "source": "openmeteo"
+    }
 
 
 async def get_weather_openmeteo_archive(lat, lon):
